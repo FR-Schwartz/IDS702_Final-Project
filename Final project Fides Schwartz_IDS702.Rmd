@@ -1,0 +1,494 @@
+---
+title: "Final project Fides Schwartz_IDS702"
+author: "Fides"
+date: "11/14/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+rm(list = ls())
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=8, fig.height=4) 
+library(ggplot2)
+library(xtable)
+library(tidyverse) #for all data wrangling
+library(cowplot) #for manuscript ready figures
+library(lme4) #for lmer & glmer models
+library(sjPlot) #for plotting lmer and glmer mods
+library(sjmisc) 
+#library(effects)
+library(sjstats) #use for r2 functions
+library(dplyr)
+library(MASS)
+library(arm)
+library(pROC)
+library(e1071)
+library(yardstick)
+library(gridExtra)
+library(ggiraphExtra)
+library(qwraps2)
+library(cowplot)
+```
+
+## Summary
+In this project, I analyze the effect of higher matrix size reconstructions (768x768 or 1024x1024 pixels) of computed tomography (CT) data compared to the current clinical standard (512x512 pixels). The hypothesis for this work is that reconstruction of image data from arterial run-off studies, that depict the arteries of the lower extremities, using high matrix sizes will improve the readability of these studies and reader confidence with either no, or only a small increase in image noise. The results of this analysis show that higher matrix reconstructions of 768x768 and 1024x1024 pixels improve image quality with higher resolution and enable more confident assessment of peripheral artery disease. The image noise is not significantly increased using higher matrix reconstructions.
+
+```{r high matrix, echo=FALSE, include=FALSE}
+# load data and take a look at it
+data <- read.csv("C:/Users/dm93/Downloads/high_matrix.csv",header=TRUE)
+dim(data)
+str(data)
+head(data)
+```
+
+## Introduction
+Peripheral arterial disease (PAD) is defined as atherosclerotic plaque in the arteries of the lower extremity, represents a common disease that affects more than 200 million people worldwide. CT angiography (CTA) is a well-established modality for imaging the peripheral vasculature. However, the diagnostic accuracy of PAD remains a challenge in certain clinical conditions.
+
+In patients with extensive calcification of the peripheral arterial system, CT diagnostic confidence can be low, as the calcification can cause blooming artifacts, leading to the overestimation of stenosis. Similar to the coronary arteries, the arteries of the legs and feet are of small caliber so over-estimation of plaque volume plays a bigger role in mis-classification of stenosis severity than in larger arteries of the chest and abdomen.
+
+CT scanner systems, currently in clinical use, can reconstruct data at higher matrix sizes than 512x512 at 768x768 or up to 1024x1024 pixels. It has been shown that higher matrix size reconstructions at 1024x1024 pixels can improve the image quality and assessment of lung nodules and bronchial structures over the standard reconstructions at 512x512 pixels. One drawback of the higher matrix sizes that both studies described is higher image noise but the quality of images of the lungs was rated higher for the higher matrix sizes than for the standard matrix sizes, nonetheless.
+ 
+No study has compared higher matrix sizes for the imaging of peripheral artery disease to the standard clinical matrix sizes to date. In this multireader study I seek to determine whether reconstruction with a higher than standard matrix size improves image quality and clinical decision making for lower extremity CTA studies.
+
+The questions of interest are:
+1. Does the discernability of the vessel wall improve using higher matrix sizes?
+2. Does perceived image noise increase using higher matrix sizes?
+3. Does reader confidence in making a diagnosis based on the image improve using higher matrix sizes?
+4. Is there an improvement between the intermediate matrix size of 768x768 and 1024x1024?
+5. What is the inter-reader agreement between the scores for wall definition, noise levels and diagnostic confidence?
+
+```{r, echo=FALSE, include=FALSE, warning=FALSE}
+# EDA
+# Data summary
+summary(data)
+
+# overall means and standard deviations for each parameter
+library(dplyr)
+group_by(data, matrix()) %>% 
+summarise(
+  count = n(), 
+  mean = mean(wall, na.rm = TRUE),
+  sd = sd(wall, na.rm = TRUE)
+  )
+
+group_by(data, matrix()) %>% 
+summarise(
+  count = n(), 
+  mean = mean(noise, na.rm = TRUE),
+  sd = sd(noise, na.rm = TRUE)
+  )
+
+group_by(data, matrix()) %>% 
+summarise(
+  count = n(), 
+  mean = mean(confidence, na.rm = TRUE),
+  sd = sd(confidence, na.rm = TRUE)
+  )
+```
+
+### Create an overall summary table of means
+```{r, echo=FALSE, include=FALSE}
+# Means of each parameter by matrix size
+########################################
+## overall
+########################################
+
+# mean scores for each matrix size:
+
+summary1 <- 
+        list("Wall Definition" = # mean wall definition
+             list("wall_512" = ~ mean(data$wall[data$matrix == 512]),
+                  "wall_768" = ~ mean(data$wall[data$matrix == 768]),
+                  "wall_1024" = ~ mean(data$wall[data$matrix == 1024])),
+             "Noise Perception" = # mean noise perception
+                list("noise_512" = ~ mean(data$noise[data$matrix == 512]),
+                     "noise_768" = ~ mean(data$noise[data$matrix == 768]),
+                     "noise_1024" = ~ mean(data$noise[data$matrix == 1024])),
+             "Reader Confidence" = # mean reader confidence
+                list("confidence_512" = ~ mean(data$confidence[data$matrix == 512]),
+                          "confidence_768" = ~ mean(data$confidence[data$matrix == 768]),
+                          "confidence_1024" = ~ mean(data$confidence[data$matrix == 1024])))
+
+# mean wall definition fempop
+mean(data$wall[data$segment == "fempop"])
+
+# mean wall definition tibial
+mean(data$wall[data$segment == "tibial"])
+
+# mean noise fempop
+mean(data$noise[data$segment == "fempop"])
+
+# mean noise tibial
+mean(data$noise[data$segment == "tibial"])
+
+# mean reader confidence fempop
+mean(data$confidence[data$segment == "fempop"])
+     
+# mean reader confidence tibial
+mean(data$confidence[data$segment == "tibial"])
+
+# create table
+means_table <- summary_table(data, summary1)
+means_table
+```
+### Create boxplots of scores by matrix size and reader
+```{r, echo=FALSE, warning=FALSE}
+knitr::opts_chunk$set(fig.width=20, fig.height=10)
+
+bwall <- ggplot(data,aes(x=matrix, y=wall, group=matrix)) +
+  geom_boxplot(palette = c("2", "3", "4")) +
+  scale_fill_brewer(palette="Reds") +
+  labs(title="Wall definition by matrix size and reader",
+       x="Matrix size",y="Wall definition score") + 
+  theme_classic() + theme(legend.position="none") +
+  facet_wrap( ~ reader)
+
+bnoise <- ggplot(data,aes(x=matrix, y=noise, group=matrix)) +
+  geom_boxplot(palette = c("2", "3", "4")) +
+  scale_fill_brewer(palette="Reds") +
+  labs(title="Noise perception by matrix size and reader",
+       x="Matrix size",y="Noise perception score") + 
+  theme_classic() + theme(legend.position="none") +
+  facet_wrap( ~ reader)
+
+bconf <- ggplot(data,aes(x=matrix, y=confidence, group=matrix)) +
+  geom_boxplot(palette = c("2", "3", "4")) +
+  scale_fill_brewer(palette="Reds") +
+  labs(title="Diagnostic confidence by matrix size and reader",
+       x="Matrix size",y="Diagnostic confidence score") + 
+  theme_classic() + theme(legend.position="none") +
+  facet_wrap( ~ reader)
+
+#plot_grid(bwall, bnoise, bconf, labels = "AUTO")
+grid.arrange(bwall, bnoise, bconf, ncol=3)
+```
+
+## Data
+The data consists of CT image data from 50 patients, that was read by five separate readers (diagnostic and interventional radiologists as well as a vascular surgeon). A representative CT slice was shown, reconstructed with the three different matrix sizes (total of 150 images), to each reader in a randomized order to avoid introducing bias. Each reader rated the 1) the discernibility of the vessel wall, 2) the perceived image noise level and 3) their confidence in making a diagnosis based on the image shown on a continuous scale from 0-100. There was no missing data.
+This data was further sub-divided into the femoro-popliteal segments (from the groin to the bend of the knee) and the tibial segments (from the knee to the foot). This is relevant because the arteries get progressively smaller towards the feet and spatial resolution might be more relevant in the tibial segments than the femoro-popliteal ones. Overall, the vascular wall definition was ranked with a mean of 62.6 (SD=28.6), the image noise was ranked at 71.4 (SD=22.5) and the reader confidence was 60.7 (SD=20.0).
+
+## Model 
+
+### Fitting a generalized mixed-effects model and a linear mixed-effects model for overall wall definition scores
+```{r, echo=FALSE, include=FALSE}
+gwall_all <- glmer(wall~factor(matrix)+(1|subject)+(1|reader), data = data)
+summary(gwall_all)
+
+wall_all <- lmer(wall~factor(matrix)+(1|subject)+(1|reader),data=data)
+summary(wall_all)
+```
+### Compare general vs linear mixed effects model
+```{r, echo=FALSE, include=FALSE}
+anova(gwall_all, wall_all)
+```
+All of the ANOVA scores are the same for the two models, which means that the general mixed-effects model picked the linear-mixed effects model as the best fit for this task. Thus, all of the following tasks will be using the linear mixed effects model.
+
+### Generate QQ-plot
+
+```{r, echo=FALSE, warning=FALSE}
+qqnorm(resid(wall_all))
+qqline(resid(wall_all))
+```
+The assumption of normality holds, with most of the residuals distributed along the 45-degree line of the qq-plot.
+
+The simple linear mixed-effects model uses a regression for the scores of each wall definition, noise level and reader confidence as outcome and subject/patient, reader and matrix as variables. Scores are compared between reconstructions (overall and separately for tibial and femoro-popliteal arteries) using mixed effects linear regression with matrix treated as a fixed effect and subject and reader as random effects. Inter-reader agreement are determined using Spearman’s rank correlation test.
+
+This model uses the lmer function and is used to fit linear mixed-effect models, so it assumes that the residual error has a Gaussian distribution.
+
+### Linear mixed effects models for scores overall
+```{r, echo=FALSE, include=FALSE, warning=FALSE}
+########################################
+## overall
+########################################
+
+#wall definition overall
+wall_all <- lmer(wall~factor(matrix)+(1|subject)+(1|reader),data=data)
+summary(wall_all)
+#ggPredict(wall_all)
+
+#noise perception overall
+noise_all <- lmer(noise~factor(matrix)+(1|subject)+(1|reader),data=data)
+summary(noise_all)
+#ggpredict(noise_all)
+
+#reader confidence overall
+confidence_all <- lmer(confidence~factor(matrix)+(1|subject)+(1|reader),data=data)
+summary(confidence_all)
+#ggpredict(confidence_all)
+
+# Slope of coefficients for each single predictor, against the response (linear relationship between each model term and response)
+swa <- plot_model(wall_all, type = "slope")
+sna <- plot_model(noise_all, type = "slope")
+sca <- plot_model(confidence_all, type = "slope")
+
+grid.arrange(swa, sna, sca)
+
+# Predicted values (marginal effects) for specific model terms.
+prwa <- plot_model(wall_all, type = "pred")
+prna <- plot_model(noise_all, type = "pred")
+prca <- plot_model(confidence_all, type = "pred")
+
+prwa
+prna
+prca
+#grid.arrange(prwa, prna, prca)
+```
+
+### Linear mixed effects models for scores only for tibial arteries
+```{r, echo=FALSE, include=FALSE, warning=FALSE}
+########################################
+## tibials
+########################################
+
+#wall definition tibials
+wall_tib  <- lmer(wall~factor(matrix)+(1|subject)+(1|reader),data=data,subset=data$segment=="tibial")
+summary(wall_tib)
+#ggpredict(wall_tib)
+
+#noise perception tibials
+noise_tib <- lmer(noise~factor(matrix)+(1|subject)+(1|reader),data=data,subset=data$segment=="tibial")
+summary(noise_tib)
+#ggpredict(noise_tib)
+
+#reader confidence tibials
+confidence_tib <- lmer(confidence~factor(matrix)+(1|subject)+(1|reader),data=data,subset=data$segment=="tibial")
+summary(confidence_tib)
+#ggpredict(confidence_tib)
+```
+### Linear mixed effects models for scores for femoro-popliteal arteries
+```{r, echo=FALSE, include=FALSE, warning=FALSE}
+########################################
+## femoral-popliteal
+########################################
+
+#wall definition fempop
+wall_fempop <- lmer(wall~factor(matrix)+(1|subject)+(1|reader),data=data,subset=data$segment=="fempop")
+summary(wall_fempop)
+#ggpredict(wall_fempop)
+
+#noise perception fempop
+noise_fempop <- lmer(noise~factor(matrix)+(1|subject)+(1|reader),data=data,subset=data$segment=="fempop")
+summary(noise_fempop)
+#ggpredict(noise_fempop)
+
+#reader confidence fempop
+confidence_fempop <- lmer(confidence~factor(matrix)+(1|subject)+(1|reader),data=data,subset=data$segment=="fempop")
+summary(confidence_fempop)
+#ggpredict(confidence_fempop)
+```
+
+Make random effect plots for readers
+```{r, echo=FALSE, include=FALSE}
+
+rwa <- plot_model(wall_all, type = "re",
+           axis.labels=c("reader 1", "reader 2", "reader 3", "reader 4", "reader 5"),
+           show.values=TRUE, show.p=TRUE,
+           title="Readers as random effects on overall wall definition")
+
+rna <- plot_model(noise_all, type = "re",
+           axis.labels=c("reader 1", "reader 2", "reader 3", "reader 4", "reader 5"),
+           show.values=TRUE, show.p=TRUE,
+           title="Readers as random effects on overall noise perception")
+           
+
+rca <- plot_model(confidence_all, type = "re",
+           axis.labels=c("reader 1", "reader 2", "reader 3", "reader 4", "reader 5"),
+           show.values=TRUE, show.p=TRUE,
+           title="Readers as random effects on overall diagnostic confidence")
+rwa
+rna
+rca
+
+#rwt <- plot_model(wall_tib, type = "re",
+#           axis.labels=c("reader 1", "reader 2", "reader 3", "reader 4", "reader 5"),
+#           show.values=TRUE, show.p=TRUE,
+#           title="Readers as random effects on tibial segment wall definition")
+
+#rnt <- plot_model(noise_tib, type = "re",
+#           axis.labels=c("reader 1", "reader 2", "reader 3", "reader 4", "reader 5"),
+#           show.values=TRUE, show.p=TRUE,
+#           title="Readers as random effects on tibial segment noise perception")
+
+#rct <- plot_model(confidence_tib, type = "re",
+#           axis.labels=c("reader 1", "reader 2", "reader 3", "reader 4", "reader 5"),
+#           show.values=TRUE, show.p=TRUE,
+#           title="Readers as random effects on tibial segment diagnostic confidence")
+#rwt
+#rnt
+#rct
+
+rwf <- plot_model(wall_fempop, type = "re",
+           axis.labels=c("reader 1", "reader 2", "reader 3", "reader 4", "reader 5"),
+           show.values=TRUE, show.p=TRUE,
+           title="Readers as random effects on femoro-popliteal wall definition")
+
+rnf <- plot_model(noise_fempop, type = "re",
+           axis.labels=c("reader 1", "reader 2", "reader 3", "reader 4", "reader 5"),
+           show.values=TRUE, show.p=TRUE,
+           title="Readers as random effects on femoro-popliteal noise perception")
+
+rcf <- plot_model(confidence_fempop, type = "re",
+           axis.labels=c("reader 1", "reader 2", "reader 3", "reader 4", "reader 5"),
+           show.values=TRUE, show.p=TRUE,
+           title="Readers as random effects on femoro-popliteal diagnostic confidence")
+rwf
+rnf
+rcf
+
+#grid.arrange(rwa, rna, rca)
+```
+
+Make plots for each of the models
+```{r, echo=FALSE}
+wa <- plot_model(wall_all,
+           axis.labels=c("768x768", "1024x1024"),
+           show.values=TRUE, show.p=TRUE,
+           title="Effect of matrix size on overall wall definition scores")
+
+na <- plot_model(noise_all,
+           axis.labels=c("768x768", "1024x1024"),
+           show.values=TRUE, show.p=TRUE,
+           title="Effect of matrix size on overall noise perception scores")
+
+ca <- plot_model(confidence_all,
+           axis.labels=c("768x768", "1024x1024"),
+           show.values=TRUE, show.p=TRUE,
+           title="Effect of matrix size on overall diagnostic confidence scores")
+
+grid.arrange(wa, na, ca, ncol=3)
+
+wt <- plot_model(wall_tib,
+           axis.labels=c("768x768", "1024x1024"),
+           show.values=TRUE, show.p=TRUE,
+           title="Effect of matrix size on tibial segment wall definition scores")
+
+nt <- plot_model(noise_tib,
+           axis.labels=c("768x768", "1024x1024"),
+           show.values=TRUE, show.p=TRUE,
+           title="Effect of matrix size on tibial segment noise perception scores")
+
+ct <- plot_model(confidence_tib,
+           axis.labels=c("768x768", "1024x1024"),
+           show.values=TRUE, show.p=TRUE,
+           title="Effect of matrix size on tibial segment diagnostic confidence scores")
+
+grid.arrange(wt, nt, ct, ncol=3)
+
+wf <- plot_model(wall_fempop,
+           axis.labels=c("768x768", "1024x1024"),
+           show.values=TRUE, show.p=TRUE,
+           title="Effect of matrix size on femoro-poplietal wall definition scores")
+
+nf <- plot_model(noise_fempop,
+           axis.labels=c("768x768", "1024x1024"),
+           show.values=TRUE, show.p=TRUE,
+           title="Effect of matrix size on femoro-popliteal noise perception scores")
+
+cf <- plot_model(wall_fempop,
+           axis.labels=c("768x768", "1024x1024"),
+           show.values=TRUE, show.p=TRUE,
+           title="Effect of matrix size on femoro-poplietal diagnostic confidence scores")
+
+grid.arrange(wf, nf, cf, ncol=3)
+```
+Plot marginal effects, discrete predictors are held constant at their proportions (not reference level)
+```{r, echo=FALSE, include=FALSE}
+mewa <- plot_model(wall_all, type = "eff", title="Predicted values of overall wall defintion")
+mena <- plot_model(noise_all, type = "eff")
+meca <- plot_model(confidence_all, type = "eff")
+
+mewa
+mena
+meca
+#grid.arrange(mewa, mena, meca, ncol=3)
+
+mewt <- plot_model(wall_tib, type = "eff", title="Predicted values of tibial wall defintion")
+ment <- plot_model(noise_tib, type = "eff", title="Predicted values of tibial noise perception")
+mect <- plot_model(confidence_tib, type = "eff", title="Predicted values of tibial diagnostic confidence")
+
+mewt
+ment
+mect
+
+mewf <- plot_model(wall_fempop, type = "eff", title="Predicted values of femoro-popliteal wall defintion")
+menf <- plot_model(noise_fempop, type = "eff", title="Predicted values of femoro-popliteal noise perception")
+mecf <- plot_model(confidence_fempop, type = "eff", title="Predicted values of femoro-popliteal diagnostic confidence")
+
+mewf
+menf
+mecf
+```
+
+Make some tables
+```{r, echo=FALSE, include=FALSE}
+twa <- tab_model(wall_all, 
+          show.re.var= TRUE, 
+          pred.labels =c("(Intercept)", "768x768", "1024x1024"),
+          dv.labels= "Effects of matrix size on overall wall definition scores")
+
+tna <- tab_model(noise_all, 
+          show.re.var= TRUE, 
+          pred.labels =c("(Intercept)", "768x768", "1024x1024"),
+          dv.labels= "Effects of matrix size on overall noise perception scores")
+
+tca <- tab_model(confidence_all, 
+          show.re.var= TRUE, 
+          pred.labels =c("(Intercept)", "768x768", "1024x1024"),
+          dv.labels= "Effects of matrix size on overall diagnostic confidence scores")
+
+twt <- tab_model(wall_tib, 
+          show.re.var= TRUE, 
+          pred.labels =c("(Intercept)", "768x768", "1024x1024"),
+          dv.labels= "Effects of matrix size on tibial wall definition scores")
+
+tnt <- tab_model(noise_tib, 
+          show.re.var= TRUE, 
+          pred.labels =c("(Intercept)", "768x768", "1024x1024"),
+          dv.labels= "Effects of matrix size on tibial noise perception scores")
+
+tct <- tab_model(confidence_tib, 
+          show.re.var= TRUE, 
+          pred.labels =c("(Intercept)", "768x768", "1024x1024"),
+          dv.labels= "Effects of matrix size on tibial diagnostic confidence scores")
+
+twf <- tab_model(wall_fempop, 
+          show.re.var= TRUE, 
+          pred.labels =c("(Intercept)", "768x768", "1024x1024"),
+          dv.labels= "Effects of matrix size on femoro-poplietal wall definition scores")
+
+tnf <- tab_model(noise_fempop, 
+          show.re.var= TRUE, 
+          pred.labels =c("(Intercept)", "768x768", "1024x1024"),
+          dv.labels= "Effects of matrix size on femoro-poplietal noise perception scores")
+
+tcf <- tab_model(noise_fempop, 
+          show.re.var= TRUE, 
+          pred.labels =c("(Intercept)", "768x768", "1024x1024"),
+          dv.labels= "Effects of matrix size on femoro-poplietal diagnostic confidence scores")
+twa
+twt
+twf
+
+#grid.arrange(twa, tna, tca)
+#grid.arrange(twt, tnt, tct)
+#grid.arrange(twf, tnf, tcf)
+
+```
+
+## Conclusions
+Higher matrix reconstructions of 768x768 and 1024x1024 pixels improve image quality with higher resolution and enable more confident assessment of peripheral artery disease, based on the analysis of this data.
+
+1. Does the discernability of the vessel wall improve using higher matrix sizes?
+Reconstructions with a 768x768 matrix received a mean score of 64.6 (95% CI = 56-73) and a 1024x1024 matrix received a mean score of 64.5 (95% CI = 56-73) for wall definition, while a 512x512 matrix reached a mean score of 58.8 with a 95% CI of 50-67.5. The difference between each of the higher matrix sizes and the standard matrix size was statistically significant at P=0.004 and P=0.005.
+
+2. Does perceived image noise increase using higher matrix sizes?
+The perceived image noise was not significantly different with a 768x768 and a 1024x1024 matrix size (mean scores of 72.3 and 72.2, 95% CI=61-83 for both) compared to a 512x512 matrix size (mean score of 69.8, 95% CI=58.8-80.7; 768x768 vs 512x512 with P=0.08 and 1024x1024 vs 512x512 with P=0.09). 
+
+3. Does reader confidence in making a diagnosis based on the image improve using higher matrix sizes?
+Reader confidence in determining grade of stenosis was significantly higher for 768x768 and 1024x1024 matrix sizes (mean scores of 63 and 62.6, 95% CI=55-71 and 55-71) compared to a 512x512 matrix size (mean score of 56.4, 95% CI=48-65, P=0.006 and 0.001).
+
+4. Is there an improvement between the intermediate matrix size of 768x768 and 1024x1024?
+There is no significant difference between wall definition scores or diagnostic confidence scores between the two higher matrix sizes.
+
+5. What is the inter-reader agreement between the scores for wall definition, noise levels and diagnostic confidence?
+The rho is 0.5 for inter-reader agreement in all of the scores, this translates to a kappa of 0.5, which is generally interpreted as moderate inter-reader agreement.
